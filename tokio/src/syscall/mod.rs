@@ -11,9 +11,10 @@
 //!
 //! [syscall]:crate::syscall
 mod default;
-use crate::task::JoinHandle;
 pub(crate) use default::DefaultSyscalls;
 use std::future::Future;
+
+use std::io;
 use std::pin::Pin;
 
 /// Syscalls trait allows for hooking into the Tokio runtime.
@@ -23,4 +24,13 @@ pub trait Syscalls: Send + Sync {
 
     /// Spawn a blocking task onto the runtime.
     fn spawn_blocking(&self, task: Box<dyn FnOnce()>);
+
+    /// Drive the runtime forward
+    fn park(&self) -> Result<(), io::Error>;
+
+    /// Drive the runtime forward with a timeout.
+    fn park_timeout(&self, duration: std::time::Duration) -> Result<(), io::Error>;
+
+    /// Unblock the runtime
+    fn unpark(&self);
 }

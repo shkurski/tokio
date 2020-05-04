@@ -66,6 +66,9 @@ pub struct Builder {
 
     /// To run before each worker thread stops
     pub(super) before_stop: Option<Callback>,
+
+    #[cfg(all(feature = "test-util", tokio_unstable))]
+    syscalls: Arc<dyn crate::syscall::Syscalls>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -107,6 +110,9 @@ impl Builder {
             // No worker thread callbacks
             after_start: None,
             before_stop: None,
+
+            #[cfg(all(feature = "test-util", tokio_unstable))]
+            syscalls: Arc::new(crate::syscall::DefaultSyscalls),
         }
     }
 
@@ -319,8 +325,9 @@ impl Builder {
         }
     }
 
+    #[cfg(not(all(feature = "test-util", tokio_unstable)))]
     fn build_shell_runtime(&mut self) -> io::Result<Runtime> {
-        use crate::runtime::Kind;
+        use crate::runtime::variant::Kind;
 
         let clock = time::create_clock();
 
@@ -333,9 +340,9 @@ impl Builder {
         let blocking_pool = blocking::create_blocking_pool(self, self.max_threads);
         let blocking_spawner = blocking_pool.spawner().clone();
 
-        Ok(Runtime {
-            kind: Kind::Shell(Shell::new(driver)),
-            handle: Handle {
+        Ok(Runtime::from_parts(
+            Kind::Shell(Shell::new(driver)),
+            Handle {
                 spawner,
                 io_handle,
                 time_handle,
@@ -343,7 +350,19 @@ impl Builder {
                 blocking_spawner,
             },
             blocking_pool,
-        })
+        ))
+    }
+}
+
+cfg_test_util_unstable! {
+    impl Builder {
+        /// Provide an alternate set of [`Syscalls`] for the runtime.
+        ///
+        /// [`Syscalls`]:crate::Syscalls
+        pub fn syscalls(&mut self, syscalls: Arc<dyn crate::syscall::Syscalls>) -> &mut Builder {
+            self.syscalls = syscalls;
+            self
+        }
     }
 }
 
@@ -412,7 +431,8 @@ cfg_rt_core! {
         }
 
         fn build_basic_runtime(&mut self) -> io::Result<Runtime> {
-            use crate::runtime::{BasicScheduler, Kind};
+            use crate::runtime::{BasicScheduler};
+            use crate::runtime::variant::Kind;
 
             let clock = time::create_clock();
 
@@ -431,18 +451,15 @@ cfg_rt_core! {
             // Blocking pool
             let blocking_pool = blocking::create_blocking_pool(self, self.max_threads);
             let blocking_spawner = blocking_pool.spawner().clone();
-
-            Ok(Runtime {
-                kind: Kind::Basic(scheduler),
-                handle: Handle {
-                    spawner,
-                    io_handle,
-                    time_handle,
-                    clock,
-                    blocking_spawner,
-                },
-                blocking_pool,
-            })
+            Ok(Runtime::from_parts( Kind::Basic(scheduler),
+            Handle {
+                spawner,
+                io_handle,
+                time_handle,
+                clock,
+                blocking_spawner,
+            },
+            blocking_pool))
         }
     }
 }
@@ -462,7 +479,8 @@ cfg_rt_threaded! {
 
         fn build_threaded_runtime(&mut self) -> io::Result<Runtime> {
             use crate::loom::sys::num_cpus;
-            use crate::runtime::{Kind, ThreadPool};
+            use crate::runtime::variant::{Kind};
+            use crate::runtime::thread_pool::ThreadPool;
             use crate::runtime::park::Parker;
             use std::cmp;
 
@@ -492,11 +510,11 @@ cfg_rt_threaded! {
             // Spawn the thread pool workers
             handle.enter(|| launch.launch());
 
-            Ok(Runtime {
-                kind: Kind::ThreadPool(scheduler),
+            Ok(Runtime::from_parts(
+                Kind::ThreadPool(scheduler),
                 handle,
                 blocking_pool,
-            })
+            ))
         }
     }
 }

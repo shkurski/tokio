@@ -198,7 +198,6 @@ cfg_rt_core! {
 }
 
 mod blocking;
-use blocking::BlockingPool;
 
 cfg_blocking_impl! {
     #[allow(unused_imports)]
@@ -222,7 +221,6 @@ cfg_rt_threaded! {
 }
 
 mod shell;
-use self::shell::Shell;
 
 mod spawner;
 use self::spawner::Spawner;
@@ -231,13 +229,15 @@ mod time;
 
 cfg_rt_threaded! {
     mod queue;
-
     pub(crate) mod thread_pool;
-    use self::thread_pool::ThreadPool;
 }
 
 cfg_rt_core! {
     use crate::task::JoinHandle;
+}
+
+cfg_test_util_unstable! {
+    mod syscall;
 }
 
 use std::future::Future;
@@ -273,30 +273,7 @@ use std::time::Duration;
 /// [`tokio::run`]: fn@run
 #[derive(Debug)]
 pub struct Runtime {
-    /// Task executor
-    kind: Kind,
-
-    /// Handle to runtime, also contains driver handles
-    handle: Handle,
-
-    /// Blocking pool handle, used to signal shutdown
-    blocking_pool: BlockingPool,
-}
-
-/// The runtime executor is either a thread-pool or a current-thread executor.
-#[derive(Debug)]
-enum Kind {
-    /// Not able to execute concurrent tasks. This variant is mostly used to get
-    /// access to the driver handles.
-    Shell(Shell),
-
-    /// Execute all tasks on the current-thread.
-    #[cfg(feature = "rt-core")]
-    Basic(BasicScheduler<time::Driver>),
-
-    /// Execute tasks across multiple threads.
-    #[cfg(feature = "rt-threaded")]
-    ThreadPool(ThreadPool),
+    inner: variant::Inner,
 }
 
 /// After thread starts / before thread stops
@@ -393,12 +370,7 @@ impl Runtime {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        match &self.kind {
-            Kind::Shell(_) => panic!("task execution disabled"),
-            #[cfg(feature = "rt-threaded")]
-            Kind::ThreadPool(exec) => exec.spawn(future),
-            Kind::Basic(exec) => exec.spawn(future),
-        }
+        self.inner.spawn(future)
     }
 
     /// Run a future to completion on the Tokio runtime. This is the runtime's
@@ -436,15 +408,7 @@ impl Runtime {
     ///
     /// [handle]: fn@Handle::block_on
     pub fn block_on<F: Future>(&mut self, future: F) -> F::Output {
-        let kind = &mut self.kind;
-
-        self.handle.enter(|| match kind {
-            Kind::Shell(exec) => exec.block_on(future),
-            #[cfg(feature = "rt-core")]
-            Kind::Basic(exec) => exec.block_on(future),
-            #[cfg(feature = "rt-threaded")]
-            Kind::ThreadPool(exec) => exec.block_on(future),
-        })
+        self.inner.block_on(future)
     }
 
     /// Enter the runtime context. This allows you to construct types that must
@@ -483,7 +447,7 @@ impl Runtime {
     where
         F: FnOnce() -> R,
     {
-        self.handle.enter(f)
+        self.inner.enter(f)
     }
 
     /// Return a handle to the runtime's spawner.
@@ -504,7 +468,7 @@ impl Runtime {
     /// handle.spawn(async { println!("hello"); });
     /// ```
     pub fn handle(&self) -> &Handle {
-        &self.handle
+        &self.inner.handle()
     }
 
     /// Shutdown the runtime, waiting for at most `duration` for all spawned
@@ -543,9 +507,152 @@ impl Runtime {
     /// }
     /// ```
     pub fn shutdown_timeout(self, duration: Duration) {
-        let Runtime {
-            mut blocking_pool, ..
-        } = self;
-        blocking_pool.shutdown(Some(duration));
+        self.inner.shutdown_timeout(duration)
+    }
+}
+
+#[cfg(not(all(feature = "test-util", tokio_unstable)))]
+mod variant {
+    use super::basic_scheduler::BasicScheduler;
+    use super::blocking::BlockingPool;
+    use super::shell::Shell;
+    use super::thread_pool::ThreadPool;
+    use super::time;
+    use super::Handle;
+    use super::JoinHandle;
+    use std::future::Future;
+    use std::time::Duration;
+
+    impl super::Runtime {
+        pub(super) fn from_parts(
+            kind: Kind,
+            handle: Handle,
+            blocking_pool: BlockingPool,
+        ) -> super::Runtime {
+            let inner = Inner {
+                kind,
+                handle,
+                blocking_pool,
+            };
+            super::Runtime { inner }
+        }
+    }
+
+    /// The runtime executor is either a thread-pool or a current-thread executor.
+    #[derive(Debug)]
+    pub(super) enum Kind {
+        /// Not able to execute concurrent tasks. This variant is mostly used to get
+        /// access to the driver handles.
+        Shell(Shell),
+
+        /// Execute all tasks on the current-thread.
+        #[cfg(feature = "rt-core")]
+        Basic(BasicScheduler<time::Driver>),
+
+        /// Execute tasks across multiple threads.
+        #[cfg(feature = "rt-threaded")]
+        ThreadPool(ThreadPool),
+    }
+
+    #[derive(Debug)]
+    pub(super) struct Inner {
+        /// Task executor
+        kind: Kind,
+
+        /// Handle to runtime, also contains driver handles
+        handle: Handle,
+
+        /// Blocking pool handle, used to signal shutdown
+        blocking_pool: BlockingPool,
+    }
+
+    impl Inner {
+        #[cfg(feature = "rt-core")]
+        pub(super) fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
+        where
+            F: Future + Send + 'static,
+            F::Output: Send + 'static,
+        {
+            match &self.kind {
+                Kind::Shell(_) => panic!("task execution disabled"),
+                #[cfg(feature = "rt-threaded")]
+                Kind::ThreadPool(exec) => exec.spawn(future),
+                Kind::Basic(exec) => exec.spawn(future),
+            }
+        }
+
+        pub(super) fn block_on<F: Future>(&mut self, future: F) -> F::Output {
+            let kind = &mut self.kind;
+            self.handle.enter(|| match kind {
+                Kind::Shell(exec) => exec.block_on(future),
+                #[cfg(feature = "rt-core")]
+                Kind::Basic(exec) => exec.block_on(future),
+                #[cfg(feature = "rt-threaded")]
+                Kind::ThreadPool(exec) => exec.block_on(future),
+            })
+        }
+
+        pub(super) fn enter<F, R>(&self, f: F) -> R
+        where
+            F: FnOnce() -> R,
+        {
+            self.handle.enter(f)
+        }
+
+        pub(super) fn handle(&self) -> &Handle {
+            &self.handle
+        }
+
+        pub(super) fn shutdown_timeout(self, duration: Duration) {
+            let Inner {
+                mut blocking_pool, ..
+            } = self;
+            blocking_pool.shutdown(Some(duration))
+        }
+    }
+}
+
+#[cfg(all(feature = "test-util", tokio_unstable))]
+mod variant {
+    use super::Handle;
+    use crate::syscall::Syscalls;
+    use crate::task::JoinHandle;
+    use std::future::Future;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[derive(Debug)]
+    pub(super) struct Inner {
+        syscalls: Arc<dyn Syscalls>,
+    }
+
+    impl Inner {
+        #[cfg(feature = "rt-core")]
+        pub(super) fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
+        where
+            F: Future + Send + 'static,
+            F::Output: Send + 'static,
+        {
+            todo!()
+        }
+
+        pub(super) fn block_on<F: Future>(&mut self, future: F) -> F::Output {
+            todo!()
+        }
+
+        pub(super) fn enter<F, R>(&self, f: F) -> R
+        where
+            F: FnOnce() -> R,
+        {
+            todo!()
+        }
+
+        pub(super) fn handle(&self) -> &Handle {
+            todo!()
+        }
+
+        pub(super) fn shutdown_timeout(self, duration: Duration) {
+            todo!()
+        }
     }
 }

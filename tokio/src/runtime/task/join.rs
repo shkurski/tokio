@@ -189,7 +189,7 @@ impl<T> Drop for RawTaskJoinHandle<T> {
 
 #[cfg(not(all(feature = "test-util", tokio_unstable)))]
 mod variant {
-    type Inner<T> = super::RawTaskJoinHandle<T>;
+    pub(super) type Inner<T> = super::RawTaskJoinHandle<T>;
 }
 
 #[cfg(all(feature = "test-util", tokio_unstable))]
