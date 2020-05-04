@@ -1,6 +1,9 @@
 //! The [syscall] module is intended to provide a centralized location
 //! for interacting with OS resources such as disks and network.
 //!
+//! This requires both the `"test-util"` feature to be enabled as well
+//! as the `--cfg tokio_unstable` flag to be supplied.
+//!
 //! ## Extension
 //! The Syscall trait allows hooking into implementations of Tokio
 //! disk and networking resources to supply alternate implementations
