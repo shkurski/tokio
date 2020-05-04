@@ -513,12 +513,15 @@ impl Runtime {
 
 #[cfg(not(all(feature = "test-util", tokio_unstable)))]
 mod variant {
+    #[cfg(feature = "rt-core")]
     use super::basic_scheduler::BasicScheduler;
     use super::blocking::BlockingPool;
     use super::shell::Shell;
+    #[cfg(feature = "rt-threaded")]
     use super::thread_pool::ThreadPool;
     use super::time;
     use super::Handle;
+    #[cfg(feature = "rt-core")]
     use super::JoinHandle;
     use std::future::Future;
     use std::time::Duration;
@@ -616,6 +619,7 @@ mod variant {
 mod variant {
     use super::Handle;
     use crate::syscall::Syscalls;
+    #[cfg(feature = "rt-core")]
     use crate::task::JoinHandle;
     use std::future::Future;
     use std::sync::Arc;
