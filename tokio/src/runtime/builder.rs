@@ -431,7 +431,7 @@ cfg_rt_core! {
         }
 
         fn build_basic_runtime(&mut self) -> io::Result<Runtime> {
-            use crate::runtime::{BasicScheduler};
+            use crate::runtime::BasicScheduler;
             use crate::runtime::variant::Kind;
 
             let clock = time::create_clock();
@@ -479,7 +479,7 @@ cfg_rt_threaded! {
 
         fn build_threaded_runtime(&mut self) -> io::Result<Runtime> {
             use crate::loom::sys::num_cpus;
-            use crate::runtime::variant::{Kind};
+            use crate::runtime::variant::Kind;
             use crate::runtime::thread_pool::ThreadPool;
             use crate::runtime::park::Parker;
             use std::cmp;
